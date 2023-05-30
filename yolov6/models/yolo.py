@@ -65,7 +65,7 @@ def build_network(config, channels, num_classes, num_layers, fuse_ab=False, dist
     use_dfl = config.model.head.use_dfl
     reg_max = config.model.head.reg_max
     num_repeat = [(max(round(i * depth_mul), 1) if i > 1 else i) for i in (num_repeat_backbone + num_repeat_neck)]
-    channels_list = [make_divisible(i * width_mul, 8) for i in (channels_list_backbone + channels_list_neck)]
+    channels_list = [make_divisible(i * width_mul, 8) for i in (channels_list_backbone + channels_list_neck)] # [32, 64, 128, 256, 512, 128, 64, 64, 128, 128, 256]
 
     block = get_block(config.training_mode)
     BACKBONE = eval(config.model.backbone.type)
@@ -120,7 +120,7 @@ def build_network(config, channels, num_classes, num_layers, fuse_ab=False, dist
 
     else:
         from yolov6.models.effidehead import Detect, build_effidehead_layer
-        head_layers = build_effidehead_layer(channels_list, 1, num_classes, reg_max=reg_max, num_layers=num_layers)
+        head_layers = build_effidehead_layer(channels_list, 1, num_classes, reg_max=reg_max, num_layers=num_layers) # channels_list=[32, 64, 128, 256, 512, 128, 64, 64, 128, 128, 256]
         head = Detect(num_classes, num_layers, head_layers=head_layers, use_dfl=use_dfl)
 
     return backbone, neck, head

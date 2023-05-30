@@ -156,7 +156,7 @@ class Trainer:
         # forward
         with amp.autocast(enabled=self.device != 'cpu'):
             preds, s_featmaps = self.model(images) 
-            # preds = [(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  （N, 8400, num of class）,  (N, 8400, 4) 
+            # preds = [(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  （N, 8400, num of class）,  (N, 8400, 4 + 12) 
             # featmaps = [tensor0, tensor1, tensor2] from neck
             if self.args.distill:
                 with torch.no_grad():

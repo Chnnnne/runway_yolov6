@@ -77,9 +77,9 @@ class Detect(nn.Module):
                 cls_x = x[i]
                 reg_x = x[i]
                 cls_feat = self.cls_convs[i](cls_x) # （N, 256, 20, 20） -> cls_convs[0] -> (N, 256, 20, 20)
-                cls_output = self.cls_preds[i](cls_feat) # (N, 256, 20, 20) -> cls_ preds[0] -> (N, 1, 20, 20)
+                cls_output = self.cls_preds[i](cls_feat) # (N, 256, 20, 20) -> cls_ preds[0] -> *(N, 1, 20, 20)*
                 reg_feat = self.reg_convs[i](reg_x) # (N, 256, 20, 20) -> reg_convs[0] -> (N, 256, 20, 20)
-                reg_output = self.reg_preds[i](reg_feat) # (N, 256, 20, 20) -> reg_preds[0] -> (N, 4, 20, 20)  distance: ltrb
+                reg_output = self.reg_preds[i](reg_feat) # (N, 256, 20, 20) -> reg_preds[0] -> *(N, 4, 20, 20)*  distance: ltrb
 
                 cls_output = torch.sigmoid(cls_output) # (N, 1, 20, 20) -> sigmoid -> (N, 1, 20, 20)
                 cls_score_list.append(cls_output.flatten(2).permute((0, 2, 1))) # (N, 1, 20, 20) -> flatten -> (N, 1, 400) -> permute -> (N, 400, 1)
@@ -130,7 +130,7 @@ class Detect(nn.Module):
 
 
 def build_effidehead_layer(channels_list, num_anchors, num_classes, reg_max=16, num_layers=3):
-
+    # channels_list = [32, 64, 128, 256, 512, 128, 64, 64, 128, 128, 256]
     chx = [6, 8, 10] if num_layers == 3 else [8, 9, 10, 11]
 
     head_layers = nn.Sequential(
@@ -164,7 +164,7 @@ def build_effidehead_layer(channels_list, num_anchors, num_classes, reg_max=16, 
         # reg_pred0
         nn.Conv2d(
             in_channels=channels_list[chx[0]],
-            out_channels=4 * (reg_max + num_anchors),
+            out_channels=4 * (reg_max + num_anchors) + 12, # 6 * (x, y)    xy的单位在特征图尺度上，是相对于anchor_point(也即anchor的中点)
             kernel_size=1
         ),
         # stem1
@@ -197,7 +197,7 @@ def build_effidehead_layer(channels_list, num_anchors, num_classes, reg_max=16, 
         # reg_pred1
         nn.Conv2d(
             in_channels=channels_list[chx[1]],
-            out_channels=4 * (reg_max + num_anchors),
+            out_channels=4 * (reg_max + num_anchors) + 12,
             kernel_size=1
         ),
         # stem2
@@ -230,7 +230,7 @@ def build_effidehead_layer(channels_list, num_anchors, num_classes, reg_max=16, 
         # reg_pred2
         nn.Conv2d(
             in_channels=channels_list[chx[2]],
-            out_channels=4 * (reg_max + num_anchors),
+            out_channels=4 * (reg_max + num_anchors) + 12,
             kernel_size=1
         )
     )

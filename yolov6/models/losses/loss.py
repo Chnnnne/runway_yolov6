@@ -64,7 +64,7 @@ class ComputeLoss:
         step_num
     ):
         '''
-        outputs =  preds = [(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  (N, 8400, 1),  (N, 8400, 4) ltrb归一化之后的
+        outputs =  preds = [(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  (N, 8400, 1),  (N, 8400, 4) ltrb在特征图尺度上的！
         targets = (88, 6)  88个对象， [:, 0]是 序号  [:, 1]是得分   [:, 2:-1] 是 4个位置信息xywh（归一化之后的）
         '''  
         feats, pred_scores, pred_distri = outputs        
