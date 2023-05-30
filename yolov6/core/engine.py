@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 import cv2
 import numpy as np
+import matplotlib.pyplot as plt
 import math
 import torch
 from torch.cuda import amp
@@ -118,7 +119,7 @@ class Trainer:
     def train_in_loop(self, epoch_num):
         try:
             self.prepare_for_steps()
-            for self.step, self.batch_data in self.pbar:
+            for self.step, self.batch_data in self.pbar: # batch_data:list = [tensor0, tensor1, list0, list1] ; t0=(N,3,640,640) 范围是(0,255) ; t1=(99 , 6); list0=[img_path...]
                 self.train_in_steps(epoch_num, self.step)
                 self.print_details()
         except Exception as _:
@@ -132,7 +133,21 @@ class Trainer:
 
     # Training loop for batchdata
     def train_in_steps(self, epoch_num, step_num):
-        images, targets = self.prepro_data(self.batch_data, self.device)
+        images, targets = self.prepro_data(self.batch_data, self.device) # images(N, 3, 640, 640) 范围是0-1    targets(88, 6)  xywh
+        ''' debug for show the train images
+        img_np  = np.transpose((images[1] * 255).cpu().numpy(), (1, 2, 0))
+        cv2.imwrite("/workspace/YOLOv6/debug/images0.jpg",img_np)
+        '''
+        ''' debug
+        # dicts = {i:[] for i in range(images.shape[0])} 
+        # for i in range(targets.shape[0]):
+        #     dicts[int(targets[i][0])].append((targets[i][2],targets[i][3],targets[i][4],targets[i][5]))
+
+        # for i in range(len(self.batch_data[2])):
+        #     img_show = cv2.imread(self.batch_data[2][0])
+        #     cv2.imwrite('imagewrite/0.jpg', img_show)
+        
+        debug'''
         # plot train_batch and save to tensorboard once an epoch
         if self.write_trainbatch_tb and self.main_process and self.step == 0:
             self.plot_train_batch(images, targets)
@@ -140,7 +155,9 @@ class Trainer:
 
         # forward
         with amp.autocast(enabled=self.device != 'cpu'):
-            preds, s_featmaps = self.model(images)
+            preds, s_featmaps = self.model(images) 
+            # preds = [(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  （N, 8400, num of class）,  (N, 8400, 4) 
+            # featmaps = [tensor0, tensor1, tensor2] from neck
             if self.args.distill:
                 with torch.no_grad():
                     t_preds, t_featmaps = self.teacher_model(images)

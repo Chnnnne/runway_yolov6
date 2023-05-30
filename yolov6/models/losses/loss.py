@@ -10,6 +10,7 @@ from yolov6.utils.general import dist2bbox, bbox2dist, xywh2xyxy, box_iou
 from yolov6.utils.figure_iou import IOUloss
 from yolov6.assigners.atss_assigner import ATSSAssigner
 from yolov6.assigners.tal_assigner import TaskAlignedAssigner
+import sys
 
 class ComputeLoss:
     '''Loss computation func.'''
@@ -47,6 +48,14 @@ class ComputeLoss:
         self.bbox_loss = BboxLoss(self.num_classes, self.reg_max, self.use_dfl, self.iou_type).cuda()
         self.loss_weight = loss_weight       
         
+
+    '''
+     总体流程
+     1. anchors生成
+     2. 正负样本分配
+     3. gt bbox 编码
+     4. 计算各种loss
+    '''
     def __call__(
         self,
         outputs,
@@ -54,24 +63,67 @@ class ComputeLoss:
         epoch_num,
         step_num
     ):
-        
-        feats, pred_scores, pred_distri = outputs
+        '''
+        outputs =  preds = [(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  (N, 8400, 1),  (N, 8400, 4) ltrb归一化之后的
+        targets = (88, 6)  88个对象， [:, 0]是 序号  [:, 1]是得分   [:, 2:-1] 是 4个位置信息xywh（归一化之后的）
+        '''  
+        feats, pred_scores, pred_distri = outputs        
+
+        ''' 
+        Step1: 得到head的输出之后, 先生成anchor（都是原图尺度）
+        anchors = (8400, 4)         anchor的xyxy            
+        anchor_points = (8400, 2)   anchor的中心坐标
+        n_anchors_list = [6400, 1600, 400]  
+        stride_tensor = (8400, 1)
+        '''
         anchors, anchor_points, n_anchors_list, stride_tensor = \
                generate_anchors(feats, self.fpn_strides, self.grid_cell_size, self.grid_cell_offset, device=feats[0].device)
-   
+        '''with open("debug/demo01.txt", "w") as f:
+            # torch.set_printoptions(edgeitems=sys.maxsize, threshold=sys.maxsize)
+            f.write("anchors:\n"+str(anchors.tolist()))
+            f.write("\n--------\n")
+            f.write("anchor_points:\n"+str(anchor_points.tolist()))
+            f.write("\n--------\n")
+            f.write("n_anchors_list:\n"+str(n_anchors_list))
+            f.write("\n--------\n")
+            f.write("stride_tensor:\n"+str(stride_tensor.tolist()))'''
+        '''
+        print(anchors)
+        print("------------------")
+        print(anchor_points)
+        print("------------------")
+        print(n_anchors_list)
+        print("------------------")
+        print(stride_tensor)'''
         assert pred_scores.type() == pred_distri.type()
-        gt_bboxes_scale = torch.full((1,4), self.ori_img_size).type_as(pred_scores)
-        batch_size = pred_scores.shape[0]
+        gt_bboxes_scale = torch.full((1,4), self.ori_img_size).type_as(pred_scores) # [[640., 640., 640., 640.]]
+        batch_size = pred_scores.shape[0] # 32
 
+
+        '''
+        Step2: 根据targets得到gt信息
+        '''
         # targets
-        targets =self.preprocess(targets, batch_size, gt_bboxes_scale)
-        gt_labels = targets[:, :, :1]
-        gt_bboxes = targets[:, :, 1:] #xyxy
-        mask_gt = (gt_bboxes.sum(-1, keepdim=True) > 0).float()
+        targets =self.preprocess(targets, batch_size, gt_bboxes_scale) 
+        # （32, 6, 5） 每个image对应了一个(6, 5)的矩阵，其中6应该代表6个对象（根据一张图片中最大的对象的数量确定），5代表类别和xyxy     
+        #  targets_xywh（归一化尺度，直接除以640）-> targets_xyxy原图尺度
+        gt_labels = targets[:, :, :1] # 类别 （32, 6, 1）
+        gt_bboxes = targets[:, :, 1:] # xyxy （32, 6, 4） 
+        mask_gt = (gt_bboxes.sum(-1, keepdim=True) > 0).float() #（32, 6, 1）类似于子网掩码，只是标志该行位置是否有对象
         
+
+        '''
+        Step3: 根据head输出的预测 和(特征图尺度下的！)anchor_points_s 解码成预测边框（用于计算相关指标来正负样本分配？）。至此part 1部分完成
+        '''
         # pboxes
-        anchor_points_s = anchor_points / stride_tensor
-        pred_bboxes = self.bbox_decode(anchor_points_s, pred_distri) #xyxy
+        anchor_points_s = anchor_points / stride_tensor     # 这一步就是把原图尺度上的anchor_points(anchor中心点)除以下采样率得到预测特征图尺度上的anchor_points_s(一个格子大小为1,wh分别为80,40,20)
+        pred_bboxes = self.bbox_decode(anchor_points_s, pred_distri) 
+        # 根据pred_distri（distance：ltrb）和anchor_points_s得到pred_bboxes (xyxy)
+        # pred_bboxes:(32, 8400, 4) xyxy也是特征图尺度上的           pre_reg + anchor_points_s  ---decode---> pred_bbox
+        '''with open("debug/demo01.txt", "w") as f:
+            f.write("\n--------\n")
+            f.write("pred_bboxes:\n"+str(pred_bboxes.tolist()))'''
+        
 
         try:
             if epoch_num < self.warmup_epoch:
@@ -84,6 +136,15 @@ class ComputeLoss:
                         mask_gt,
                         pred_bboxes.detach() * stride_tensor)
             else:
+                ''' 
+                Step4: 这一步完成的是正负样本（前景背景样本分配），输出用于后续计算的labels、bboxes等。至此part 2部分完成，可以根据 part 1/2计算loss了
+                
+                得到如下：
+                target_labels = (32, 8400) 全零
+                target_bboxes = (32, 8400, 4) 原图尺度上
+                target_scores = (32, 8400, 1) 大部分是0
+                fg_mask = (32, 8400) bool类型的，标记哪个是前景样本  
+                '''
                 target_labels, target_bboxes, target_scores, fg_mask = \
                     self.formal_assigner(
                         pred_scores.detach(),
@@ -92,7 +153,17 @@ class ComputeLoss:
                         gt_labels,
                         gt_bboxes,
                         mask_gt)
-
+                 
+                '''with open("debug/demo01.txt", 'w') as f:
+                    f.write("\n--------\n")
+                    f.write("target_labels:\n"+str(target_labels.tolist()))
+                    f.write("\n--------\n")
+                    f.write("target_bboxes:\n"+str(target_bboxes.tolist()))
+                    f.write("\n--------\n")
+                    f.write("target_scores:\n"+str(target_scores.tolist()))
+                    f.write("\n--------\n")
+                    f.write("fg_mask:\n"+str(fg_mask.tolist()))'''
+                
         except RuntimeError:
             print(
                 "OOM RuntimeError is raised due to the huge memory cost during label assignment. \
@@ -146,11 +217,13 @@ class ComputeLoss:
             torch.cuda.empty_cache()
 
         # rescale bbox
-        target_bboxes /= stride_tensor
+        target_bboxes /= stride_tensor # rescale到预测特征层尺度，每个grid cell长度是1，至此和pred_bbox对上了
 
         # cls loss
-        target_labels = torch.where(fg_mask > 0, target_labels, torch.full_like(target_labels, self.num_classes))
-        one_hot_label = F.one_hot(target_labels.long(), self.num_classes + 1)[..., :-1]
+        target_labels = torch.where(fg_mask > 0, target_labels, torch.full_like(target_labels, self.num_classes)) # (32, 8400) 全零 -> 大多数是1
+        '''with open("debug/demo01.txt", 'w') as f:
+            f.write("target_labels:\n"+str(target_labels.tolist()))'''
+        one_hot_label = F.one_hot(target_labels.long(), self.num_classes + 1)[..., :-1] # (32, 8400, 1) 几乎全0
         loss_cls = self.varifocal_loss(pred_scores, target_scores, one_hot_label)
             
         target_scores_sum = target_scores.sum()
@@ -172,15 +245,15 @@ class ComputeLoss:
                          (self.loss_weight['dfl'] * loss_dfl).unsqueeze(0),
                          (self.loss_weight['class'] * loss_cls).unsqueeze(0))).detach()
      
-    def preprocess(self, targets, batch_size, scale_tensor):
-        targets_list = np.zeros((batch_size, 1, 5)).tolist()
-        for i, item in enumerate(targets.cpu().numpy().tolist()):
+    def preprocess(self, targets, batch_size, scale_tensor):# targets = (88, 6)  88个对象， [:, 0]是 序号  [:, 1]是类别   [:, 2:-1] 是 4个位置信息xywh
+        targets_list = np.zeros((batch_size, 1, 5)).tolist() # (32, 1, 5)
+        for i, item in enumerate(targets.cpu().numpy().tolist()): # item:(6)
             targets_list[int(item[0])].append(item[1:])
         max_len = max((len(l) for l in targets_list))
         targets = torch.from_numpy(np.array(list(map(lambda l:l + [[-1,0,0,0,0]]*(max_len - len(l)), targets_list)))[:,1:,:]).to(targets.device)
         batch_target = targets[:, :, 1:5].mul_(scale_tensor)
         targets[..., 1:] = xywh2xyxy(batch_target)
-        return targets
+        return targets #（32, 6, 5）
 
     def bbox_decode(self, anchor_points, pred_dist):
         if self.use_dfl:

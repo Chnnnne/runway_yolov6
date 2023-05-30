@@ -15,17 +15,17 @@ class Detect(nn.Module):
     def __init__(self, num_classes=80, num_layers=3, inplace=True, head_layers=None, use_dfl=True, reg_max=16):  # detection layer
         super().__init__()
         assert head_layers is not None
-        self.nc = num_classes  # number of classes
-        self.no = num_classes + 5  # number of outputs per anchor
-        self.nl = num_layers  # number of detection layers
-        self.grid = [torch.zeros(1)] * num_layers
+        self.nc = num_classes  # number of classes 1
+        self.no = num_classes + 5  # number of outputs per anchor 6
+        self.nl = num_layers  # number of detection layers 3
+        self.grid = [torch.zeros(1)] * num_layers # [tensor([0.]), tensor([0.]), tensor([0.])]
         self.prior_prob = 1e-2
         self.inplace = inplace
         stride = [8, 16, 32] if num_layers == 3 else [8, 16, 32, 64] # strides computed during build
         self.stride = torch.tensor(stride)
         self.use_dfl = use_dfl
-        self.reg_max = reg_max
-        self.proj_conv = nn.Conv2d(self.reg_max + 1, 1, 1, bias=False)
+        self.reg_max = reg_max # 16
+        self.proj_conv = nn.Conv2d(self.reg_max + 1, 1, 1, bias=False) # channel:17 -> 1
         self.grid_cell_offset = 0.5
         self.grid_cell_size = 5.0
 
@@ -37,13 +37,13 @@ class Detect(nn.Module):
         self.reg_preds = nn.ModuleList()
 
         # Efficient decoupled head layers
-        for i in range(num_layers):
-            idx = i*5
-            self.stems.append(head_layers[idx])
-            self.cls_convs.append(head_layers[idx+1])
-            self.reg_convs.append(head_layers[idx+2])
-            self.cls_preds.append(head_layers[idx+3])
-            self.reg_preds.append(head_layers[idx+4])
+        for i in range(num_layers):# 0, 1, 2
+            idx = i*5 # 0, 5, 10
+            self.stems.append(head_layers[idx])         # 0, 5, 10
+            self.cls_convs.append(head_layers[idx+1])   # 1, 6, 11
+            self.reg_convs.append(head_layers[idx+2])   # 2, 7, 12
+            self.cls_preds.append(head_layers[idx+3])   # 3, 8, 13
+            self.reg_preds.append(head_layers[idx+4])   # 4, 9, 14
 
     def initialize_biases(self):
 
@@ -67,28 +67,28 @@ class Detect(nn.Module):
         self.proj_conv.weight = nn.Parameter(self.proj.view([1, self.reg_max + 1, 1, 1]).clone().detach(),
                                                    requires_grad=False)
 
-    def forward(self, x):
+    def forward(self, x): # input x = [(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)]
         if self.training:
             cls_score_list = []
             reg_distri_list = []
 
-            for i in range(self.nl):
-                x[i] = self.stems[i](x[i])
+            for i in range(self.nl): # 0, 1, 2
+                x[i] = self.stems[i](x[i]) #  （N, 256, 20, 20） -> stem[0] ->  （N, 256, 20， 20）
                 cls_x = x[i]
                 reg_x = x[i]
-                cls_feat = self.cls_convs[i](cls_x)
-                cls_output = self.cls_preds[i](cls_feat)
-                reg_feat = self.reg_convs[i](reg_x)
-                reg_output = self.reg_preds[i](reg_feat)
+                cls_feat = self.cls_convs[i](cls_x) # （N, 256, 20, 20） -> cls_convs[0] -> (N, 256, 20, 20)
+                cls_output = self.cls_preds[i](cls_feat) # (N, 256, 20, 20) -> cls_ preds[0] -> (N, 1, 20, 20)
+                reg_feat = self.reg_convs[i](reg_x) # (N, 256, 20, 20) -> reg_convs[0] -> (N, 256, 20, 20)
+                reg_output = self.reg_preds[i](reg_feat) # (N, 256, 20, 20) -> reg_preds[0] -> (N, 4, 20, 20)  distance: ltrb
 
-                cls_output = torch.sigmoid(cls_output)
-                cls_score_list.append(cls_output.flatten(2).permute((0, 2, 1)))
-                reg_distri_list.append(reg_output.flatten(2).permute((0, 2, 1)))
+                cls_output = torch.sigmoid(cls_output) # (N, 1, 20, 20) -> sigmoid -> (N, 1, 20, 20)
+                cls_score_list.append(cls_output.flatten(2).permute((0, 2, 1))) # (N, 1, 20, 20) -> flatten -> (N, 1, 400) -> permute -> (N, 400, 1)
+                reg_distri_list.append(reg_output.flatten(2).permute((0, 2, 1)))# (N, 4, 20, 20) -> flatten -> (N, 4, 400) -> permute -> (N, 400, 4) 
 
-            cls_score_list = torch.cat(cls_score_list, axis=1)
-            reg_distri_list = torch.cat(reg_distri_list, axis=1)
+            cls_score_list = torch.cat(cls_score_list, axis=1) #(N, 6400, 1), (N, 1600, 1), (N, 400, 1) -> （N, 8400, 1）
+            reg_distri_list = torch.cat(reg_distri_list, axis=1) # (N, 6400, 4), (N, 1600, 4), (N, 400, 4) -> (N, 8400, 4)
 
-            return x, cls_score_list, reg_distri_list
+            return x, cls_score_list, reg_distri_list #[(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  （N, 8400, 1）,  (N, 8400, 4)
         else:
             cls_score_list = []
             reg_dist_list = []
