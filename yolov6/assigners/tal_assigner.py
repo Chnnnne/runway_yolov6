@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from yolov6.assigners.assigner_utils import select_candidates_in_gts, select_highest_overlaps, iou_calculator, dist_calculator
+from debug import debug_utils
 
 class TaskAlignedAssigner(nn.Module):
     def __init__(self,
@@ -29,6 +30,12 @@ class TaskAlignedAssigner(nn.Module):
         """This code referenced to
            https://github.com/Nioolek/PPYOLOE_pytorch/blob/master/ppyoloe/assigner/tal_assigner.py
 
+        Process:
+            1计算所有 bbox与 gt 之间的对齐度
+            2选择 top-k bbox 作为每个 gt 的候选项
+            3将正样品的中心限制在 gt 内(因为Anchor-Free检测器只能预测大于0的距离)
+            4如果一个Anchor被分配给多个gt，将选择IoU最高的那个
+
         Args:
             pd_scores (Tensor): shape(bs, num_total_anchors, num_classes)
             pd_bboxes (Tensor): shape(bs, num_total_anchors, 4)
@@ -43,21 +50,31 @@ class TaskAlignedAssigner(nn.Module):
             fg_mask (Tensor): shape(bs, num_total_anchors)
         """
         self.bs = pd_scores.size(0)
-        self.n_max_boxes = gt_bboxes.size(1)
+        self.n_max_boxes = gt_bboxes.size(1) # (N, 6, 4)
 
         if self.n_max_boxes == 0:
             device = gt_bboxes.device
+            '''
+            assigned_labels = (32, 8400, 1)全1,代表全部是背景
+            assigned_bboxes = (32, 8400, 4)全0
+            assigned_scores = (32, 8400, 1)全0
+            fg_mask = (32, 8400, 1) 全0
+            '''
             return torch.full_like(pd_scores[..., 0], self.bg_idx).to(device), \
                    torch.zeros_like(pd_bboxes).to(device), \
                    torch.zeros_like(pd_scores).to(device), \
                    torch.zeros_like(pd_scores[..., 0]).to(device)
 
-
+        # mask_positive [32, 6, 8400],至此就完成了给每个图片的每个gt分配正样本的任务了,8400是给每一个gt对应的所有anchor都分配了正负样本标记
         mask_pos, align_metric, overlaps = self.get_pos_mask(
-            pd_scores, pd_bboxes, gt_labels, gt_bboxes, anc_points, mask_gt)
-
+            pd_scores, pd_bboxes, gt_labels, gt_bboxes, anc_points, mask_gt) 
+        
+        # if an anchor box is assigned to multiple gts,
+        # the one with the highest iou will be selected, [B, n, L]
         target_gt_idx, fg_mask, mask_pos = select_highest_overlaps(
             mask_pos, overlaps, self.n_max_boxes)
+
+
 
         # assigned target
         target_labels, target_bboxes, target_scores = self.get_targets(
@@ -81,16 +98,16 @@ class TaskAlignedAssigner(nn.Module):
                      mask_gt):
 
         # get anchor_align metric
-        align_metric, overlaps = self.get_box_metrics(pd_scores, pd_bboxes, gt_labels, gt_bboxes)
+        align_metric, overlaps = self.get_box_metrics(pd_scores, pd_bboxes, gt_labels, gt_bboxes) # align_metric=[32, 6, 8400],   overlaps=[32, 6, 8400]
         # get in_gts mask
-        mask_in_gts = select_candidates_in_gts(anc_points, gt_bboxes)
+        mask_in_gts = select_candidates_in_gts(anc_points, gt_bboxes) # [32, 6, 8400]
         # get topk_metric mask
         mask_topk = self.select_topk_candidates(
             align_metric * mask_in_gts, topk_mask=mask_gt.repeat([1, 1, self.topk]).bool())
         # merge all mask to a final mask
-        mask_pos = mask_topk * mask_in_gts * mask_gt
-
-        return mask_pos, align_metric, overlaps
+        mask_pos = mask_topk * mask_in_gts * mask_gt # mask_positive [32, 6, 8400],至此就完成了给每个图片的每个gt分配正样本的任务了,8400是给每一个gt对应的所有anchor都分配了正负样本标记
+        # debug_utils.debug_output(mask_pos,"mask_pos")
+        return mask_pos, align_metric, overlaps #
 
     def get_box_metrics(self,
                         pd_scores,

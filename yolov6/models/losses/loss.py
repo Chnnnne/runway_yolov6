@@ -64,8 +64,8 @@ class ComputeLoss:
         step_num
     ):
         '''
-        outputs =  preds = [(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  (N, 8400, 1),  (N, 8400, 4) ltrb在特征图尺度上的！
-        targets = (88, 6)  88个对象， [:, 0]是 序号  [:, 1]是得分   [:, 2:-1] 是 4个位置信息xywh（归一化之后的）
+        outputs =  preds = [(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  (N, 8400, 1),  (N, 8400, 4 + 12) ltrb在特征图尺度上的！
+        targets = (88, 6+ 12)  88个对象， [:, 0]是 序号  [:, 1]是得分   [:, 2:-1] 是 4个位置信息xywh（归一化之后的）
         '''  
         feats, pred_scores, pred_distri = outputs        
 
@@ -105,8 +105,8 @@ class ComputeLoss:
         '''
         # targets
         targets =self.preprocess(targets, batch_size, gt_bboxes_scale) 
+        #  targets_xywh（[88,6] 归一化尺度，直接除以640）-> targets_xyxy(原图尺度 [32, 6, 5])
         # （32, 6, 5） 每个image对应了一个(6, 5)的矩阵，其中6应该代表6个对象（根据一张图片中最大的对象的数量确定），5代表类别和xyxy     
-        #  targets_xywh（归一化尺度，直接除以640）-> targets_xyxy原图尺度
         gt_labels = targets[:, :, :1] # 类别 （32, 6, 1）
         gt_bboxes = targets[:, :, 1:] # xyxy （32, 6, 4） 
         mask_gt = (gt_bboxes.sum(-1, keepdim=True) > 0).float() #（32, 6, 1）类似于子网掩码，只是标志该行位置是否有对象
@@ -116,10 +116,11 @@ class ComputeLoss:
         Step3: 根据head输出的预测 和(特征图尺度下的！)anchor_points_s 解码成预测边框（用于计算相关指标来正负样本分配？）。至此part 1部分完成
         '''
         # pboxes
-        anchor_points_s = anchor_points / stride_tensor     # 这一步就是把原图尺度上的anchor_points(anchor中心点)除以下采样率得到预测特征图尺度上的anchor_points_s(一个格子大小为1,wh分别为80,40,20)
-        pred_bboxes = self.bbox_decode(anchor_points_s, pred_distri) 
-        # 根据pred_distri（distance：ltrb）和anchor_points_s得到pred_bboxes (xyxy)
-        # pred_bboxes:(32, 8400, 4) xyxy也是特征图尺度上的           pre_reg + anchor_points_s  ---decode---> pred_bbox
+        # 这一步就是把原图尺度上的anchor_points(anchor中心点)除以下采样率得到预测特征图尺度上的anchor_points_s(一个格子大小为1,wh分别为80,40,20)
+        anchor_points_s = anchor_points / stride_tensor     
+        pred_bboxes = self.bbox_decode(anchor_points_s, pred_distri[:, :, :4]) 
+        # 根据pred_distri（distance：ltrb特征图尺度）和anchor_points_s得到pred_bboxes (xyxy) (32, 8400, 4) xyxy也是特征图尺度上的   
+        # pre_reg + anchor_points_s  ---decode---> pred_bbox
         '''with open("debug/demo01.txt", "w") as f:
             f.write("\n--------\n")
             f.write("pred_bboxes:\n"+str(pred_bboxes.tolist()))'''
@@ -143,15 +144,16 @@ class ComputeLoss:
                 target_labels = (32, 8400) 全零
                 target_bboxes = (32, 8400, 4) 原图尺度上
                 target_scores = (32, 8400, 1) 大部分是0
-                fg_mask = (32, 8400) bool类型的，标记哪个是前景样本  
+                fg_mask = (32, 8400) bool类型的，标记哪个是前景样本
+                为什么需要那么多变量呢？
                 '''
                 target_labels, target_bboxes, target_scores, fg_mask = \
                     self.formal_assigner(
-                        pred_scores.detach(),
-                        pred_bboxes.detach() * stride_tensor,
-                        anchor_points,
-                        gt_labels,
-                        gt_bboxes,
+                        pred_scores.detach(), # (N, 8400, 1)
+                        pred_bboxes.detach() * stride_tensor, # 还原到原图尺度 (32, 8400, 4) 
+                        anchor_points, #  anchor_points = (8400, 2)   anchor的中心坐标
+                        gt_labels,# 类别 （32, 6, 1）
+                        gt_bboxes, # xyxy （32, 6, 4）原图尺度
                         mask_gt)
                  
                 '''with open("debug/demo01.txt", 'w') as f:
@@ -224,7 +226,7 @@ class ComputeLoss:
         '''with open("debug/demo01.txt", 'w') as f:
             f.write("target_labels:\n"+str(target_labels.tolist()))'''
         one_hot_label = F.one_hot(target_labels.long(), self.num_classes + 1)[..., :-1] # (32, 8400, 1) 几乎全0
-        loss_cls = self.varifocal_loss(pred_scores, target_scores, one_hot_label)
+        loss_cls = self.varifocal_loss(pred_scores, target_scores, one_hot_label) # 根据head输出的预测cls分数和根据gt分配的正负样本的target scores、target labels计算 cls_loss
             
         target_scores_sum = target_scores.sum()
 		# avoid devide zero error, devide by zero will cause loss to be inf or nan.
@@ -233,8 +235,10 @@ class ComputeLoss:
         	loss_cls /= target_scores_sum
         
         # bbox loss
-        loss_iou, loss_dfl = self.bbox_loss(pred_distri, pred_bboxes, anchor_points_s, target_bboxes,
+        loss_iou, loss_dfl = self.bbox_loss(pred_distri[:, :, :4], pred_bboxes, anchor_points_s, target_bboxes,
                                             target_scores, target_scores_sum, fg_mask)
+        
+        # loss_points = 
         
         loss = self.loss_weight['class'] * loss_cls + \
                self.loss_weight['iou'] * loss_iou + \

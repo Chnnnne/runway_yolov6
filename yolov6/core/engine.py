@@ -133,7 +133,7 @@ class Trainer:
 
     # Training loop for batchdata
     def train_in_steps(self, epoch_num, step_num):
-        images, targets = self.prepro_data(self.batch_data, self.device) # images(N, 3, 640, 640) 范围是0-1    targets(88, 6)  xywh
+        images, targets = self.prepro_data(self.batch_data, self.device) # images(N, 3, 640, 640) 范围是0-1    targets(88, 6)  ltrb特征图尺度
         ''' debug for show the train images
         img_np  = np.transpose((images[1] * 255).cpu().numpy(), (1, 2, 0))
         cv2.imwrite("/workspace/YOLOv6/debug/images0.jpg",img_np)
