@@ -1,5 +1,5 @@
 '''
-将coco格式的runway数据集中的annotations下的json文件中的四个角点，处理成x,y,w,h （非归一化）
+将coco格式的runway数据集中的annotations下的json文件中的四个角点，处理成yolo格式的x,y,w,h包围框 （非归一化）
 然后重新存储成json
 
 使用方法：
