@@ -37,7 +37,7 @@ def create_dataloader(
             "WARNING: --rect is incompatible with DataLoader shuffle, setting shuffle=False"
         )
         shuffle = False
-    with torch_distributed_zero_first(rank):
+    with torch_distributed_zero_first(rank): #进行不同进程之间的数据同步   torch_distributed_zero_first(rank)
         dataset = TrainValDataset(
             path,
             img_size,

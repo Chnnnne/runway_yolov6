@@ -79,14 +79,14 @@ class Detect(nn.Module):
                 cls_feat = self.cls_convs[i](cls_x) # （N, 256, 20, 20） -> cls_convs[0] -> (N, 256, 20, 20)
                 cls_output = self.cls_preds[i](cls_feat) # (N, 256, 20, 20) -> cls_ preds[0] -> *(N, 1, 20, 20)*
                 reg_feat = self.reg_convs[i](reg_x) # (N, 256, 20, 20) -> reg_convs[0] -> (N, 256, 20, 20)
-                reg_output = self.reg_preds[i](reg_feat) # (N, 256, 20, 20) -> reg_preds[0] -> *(N, 4, 20, 20)*  distance: ltrb
+                reg_output = self.reg_preds[i](reg_feat) # (N, 256, 20, 20) -> reg_preds[0] -> *(N, 4 + 12, 20, 20)*  distance: ltrb
 
                 cls_output = torch.sigmoid(cls_output) # (N, 1, 20, 20) -> sigmoid -> (N, 1, 20, 20)
                 cls_score_list.append(cls_output.flatten(2).permute((0, 2, 1))) # (N, 1, 20, 20) -> flatten -> (N, 1, 400) -> permute -> (N, 400, 1)
-                reg_distri_list.append(reg_output.flatten(2).permute((0, 2, 1)))# (N, 4, 20, 20) -> flatten -> (N, 4, 400) -> permute -> (N, 400, 4) 
+                reg_distri_list.append(reg_output.flatten(2).permute((0, 2, 1)))# (N, 16, 20, 20) -> flatten -> (N, 16, 400) -> permute -> (N, 400, 16) 
 
             cls_score_list = torch.cat(cls_score_list, axis=1) #(N, 6400, 1), (N, 1600, 1), (N, 400, 1) -> （N, 8400, 1）
-            reg_distri_list = torch.cat(reg_distri_list, axis=1) # (N, 6400, 4), (N, 1600, 4), (N, 400, 4) -> (N, 8400, 4)
+            reg_distri_list = torch.cat(reg_distri_list, axis=1) # (N, 6400, 16), (N, 1600, 16), (N, 400, 16) -> (N, 8400, 16)
 
             return x, cls_score_list, reg_distri_list #[(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  （N, 8400, 1）,  (N, 8400, 4)
         else:
@@ -164,7 +164,7 @@ def build_effidehead_layer(channels_list, num_anchors, num_classes, reg_max=16, 
         # reg_pred0
         nn.Conv2d(
             in_channels=channels_list[chx[0]],
-            out_channels=4 * (reg_max + num_anchors) + 12, # 6 * (x, y)    xy的单位在特征图尺度上，是相对于anchor_point(也即anchor的中点)
+            out_channels=4 * (reg_max + num_anchors) + 12, #   4 * 1 + 12      6 * (x, y)    xy的单位在特征图尺度上，是相对于anchor_point(也即anchor的中点)
             kernel_size=1
         ),
         # stem1

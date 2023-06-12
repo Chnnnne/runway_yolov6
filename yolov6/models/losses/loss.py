@@ -64,8 +64,8 @@ class ComputeLoss:
         step_num
     ):
         '''
-        outputs =  preds = [(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  (N, 8400, 1),  (N, 8400, 4 + 12) ltrb在特征图尺度上的！
-        targets = (88, 6+ 12)  88个对象， [:, 0]是 序号  [:, 1]是得分   [:, 2:-1] 是 4个位置信息xywh（归一化之后的）
+        outputs =  preds = [(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  (N, 8400, 1),  (N, 8400, 4 + 12) ltrb在特征图尺度上的, 12也是在特征图尺度!
+        targets = (88, 6+ 12)  88个对象， [:, 0]是 序号  [:, 1]是得分   [:, 2:6] 是 4个位置信息xywh（归一化之后的）   [:, 6:]是6个点的位置信息
         '''  
         feats, pred_scores, pred_distri = outputs        
 
@@ -105,10 +105,12 @@ class ComputeLoss:
         '''
         # targets
         targets =self.preprocess(targets, batch_size, gt_bboxes_scale) 
-        #  targets_xywh（[88,6] 归一化尺度，直接除以640）-> targets_xyxy(原图尺度 [32, 6, 5])
-        # （32, 6, 5） 每个image对应了一个(6, 5)的矩阵，其中6应该代表6个对象（根据一张图片中最大的对象的数量确定），5代表类别和xyxy     
+        #  targets_xywh（[88,6 + 12] 归一化，直接除以640）-> targets_xyxy(原图尺度 [32, 6, 5 + 12])
+        # （32, 6, 5 + 12） 每个image对应了一个(6, 5 + 12)的矩阵，其中6应该代表6个对象（根据一张图片中最大的对象的数量确定），5代表类别和xyxy, 12 代表该对象的6个点     
         gt_labels = targets[:, :, :1] # 类别 （32, 6, 1）
-        gt_bboxes = targets[:, :, 1:] # xyxy （32, 6, 4） 
+        gt_bboxes = targets[:, :, 1:5] # xyxy （32, 6, 4）  原图尺度，非归一化
+        gt_points = targets[:, :, 5:]
+        # gt_6points = targets[:, :, 5:]  # 6 points (32, 6, 12) 
         mask_gt = (gt_bboxes.sum(-1, keepdim=True) > 0).float() #（32, 6, 1）类似于子网掩码，只是标志该行位置是否有对象
         
 
@@ -138,22 +140,24 @@ class ComputeLoss:
                         pred_bboxes.detach() * stride_tensor)
             else:
                 ''' 
-                Step4: 这一步完成的是正负样本（前景背景样本分配），输出用于后续计算的labels、bboxes等。至此part 2部分完成，可以根据 part 1/2计算loss了
+                Step4: 这一步完成的是根据gt信息(gt_labels/bboxes)和模型预测信息以及anchor信息来进行《正负样本》（前景背景样本分配），输出用于后续计算的labels、bboxes等，从而进行loss的计算。至此part 2部分完成，可以根据 part 1/2计算loss了
                 
                 得到如下：
                 target_labels = (32, 8400) 全零
                 target_bboxes = (32, 8400, 4) 原图尺度上
+                target_points = (32, 8400, 12) 原图尺度上
                 target_scores = (32, 8400, 1) 大部分是0
                 fg_mask = (32, 8400) bool类型的，标记哪个是前景样本
                 为什么需要那么多变量呢？
                 '''
-                target_labels, target_bboxes, target_scores, fg_mask = \
+                target_labels, target_bboxes, target_points, target_scores, fg_mask = \
                     self.formal_assigner(
                         pred_scores.detach(), # (N, 8400, 1)
-                        pred_bboxes.detach() * stride_tensor, # 还原到原图尺度 (32, 8400, 4) 
+                        pred_bboxes.detach() * stride_tensor, # 还原到原图尺度 (32, 8400, 4 +12?) 
                         anchor_points, #  anchor_points = (8400, 2)   anchor的中心坐标
                         gt_labels,# 类别 （32, 6, 1）
                         gt_bboxes, # xyxy （32, 6, 4）原图尺度
+                        gt_points, # xy  （32, 6, 12） 原图尺度
                         mask_gt)
                  
                 '''with open("debug/demo01.txt", 'w') as f:
@@ -238,7 +242,8 @@ class ComputeLoss:
         loss_iou, loss_dfl = self.bbox_loss(pred_distri[:, :, :4], pred_bboxes, anchor_points_s, target_bboxes,
                                             target_scores, target_scores_sum, fg_mask)
         
-        # loss_points = 
+        # points loss
+        # loss_points = self.points_loss(pred_distri[:, :, 4:], anchor_points_s, target_points)
         
         loss = self.loss_weight['class'] * loss_cls + \
                self.loss_weight['iou'] * loss_iou + \

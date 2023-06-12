@@ -30,7 +30,7 @@ class Model(nn.Module):
         initialize_weights(self)
 
     def forward(self, x):
-        # x:tensor = (32, 3, 640, 640) 已经归一化
+        # x:tensor = (32, 3, 640, 640) [0,1]
         export_mode = torch.onnx.is_in_onnx_export()
         x = self.backbone(x) # x: tuple = (tensor0, tensor1, tensor2, tensor3)     tensor0:tensor = (32, 64, 160, 160);   tensor1:tesnor = (32, 128, 80, 80);    tensor2:tensor = (32, 256, 40, 40);    tensor3:tensor = (32, 512, 20, 20) csdn图中只有tensor123对应下采样8,16,32倍
         x = self.neck(x) # x:list = [tensor0, tensor1, tensor2]  tensor0:tensor = (32, 64, 80, 80);   tensor1:tensor = (32, 128, 40, 40);   tensor2:tensor = (32, 256, 20, 20)
@@ -38,7 +38,7 @@ class Model(nn.Module):
             featmaps = []
             featmaps.extend(x) # featmaps = [tensor0, tensor1, tensor2]
         x = self.detect(x) # x:tuple = (list, tensor1, tensor2)  list=[tensor00, tesnor01, tensor02] tensor00=(32, 64, 80, 80)  tesnor01=(32, 128, 40, 40) tensor02=(32, 256, 20, 20) ;         tensor1=(32, 8400, 1)   tensor2 = (32, 8400, 4)
-        # 也即[(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  （N, 8400, 1）,  (N, 8400, 4)
+        # 也即[(N, 64, 80, 80), (N, 128, 40, 40), (N, 256, 20, 20)] ,  cls_score（N, 8400, 1）,   reg_distri (N, 8400, 4 + 12)
         return x if export_mode is True else [x, featmaps]
 
     def _apply(self, fn):

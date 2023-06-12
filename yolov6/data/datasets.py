@@ -65,7 +65,7 @@ class TrainValDataset(Dataset):
         self.main_process = self.rank in (-1, 0)
         self.task = self.task.capitalize()
         self.class_names = data_dict["names"]
-        self.img_paths, self.labels = self.get_imgs_labels(self.img_dir)
+        self.img_paths, self.labels = self.get_imgs_labels(self.img_dir) # img_path:tuple  len:9686;            labels:tuple   len:9686 注意是每张图片都对应的label上可能有多个对象
         if self.rect:
             shapes = [self.img_info[p]["shape"] for p in self.img_paths]
             self.shapes = np.array(shapes, dtype=np.float64)
@@ -223,6 +223,7 @@ class TrainValDataset(Dataset):
         )
         NUM_THREADS = min(8, os.cpu_count())
 
+        #得到图片的相对全路径(并排序)
         img_paths = glob.glob(osp.join(img_dir, "**/*"), recursive=True)
         img_paths = sorted(
             p for p in img_paths if p.split(".")[-1].lower() in IMG_FORMATS and os.path.isfile(p)
@@ -230,6 +231,7 @@ class TrainValDataset(Dataset):
         assert img_paths, f"No images found in {img_dir}."
 
         img_hash = self.get_hash(img_paths)
+        # 生成图片文件夹下的json文件，并得到cache_info:dict=(keys: information、hash):和img_info: dict=(kv: imgpath-shape，labels) 
         if osp.exists(valid_img_record):
             with open(valid_img_record, "r") as f:
                 cache_info = json.load(f)
@@ -238,7 +240,7 @@ class TrainValDataset(Dataset):
                 else:
                     self.check_images = True
         else:
-            self.check_images = True
+            self.check_images = True #如果不存在valid_img_record的话，就把check_images设置成 True,下面的操作会生成图片文件夹下的json和cache
 
         # check images
         if self.check_images and self.main_process:
@@ -289,7 +291,7 @@ class TrainValDataset(Dataset):
             rel_path = osp.relpath(full_path, base_path)
             return osp.join(osp.dirname(rel_path), osp.splitext(osp.basename(rel_path))[0] + new_ext)
 
-
+        # 得到label_paths
         img_paths = list(img_info.keys())
         label_paths = sorted(
             osp.join(label_dir, _new_rel_path_with_ext(img_dir, p, ".txt"))
@@ -342,7 +344,7 @@ class TrainValDataset(Dataset):
                 LOGGER.warning(
                     f"WARNING: No labels found in {osp.dirname(img_paths[0])}. "
                 )
-
+        # 对于val任务
         if self.task.lower() == "val":
             if self.data_dict.get("is_coco", False): # use original json file when evaluating on coco dataset.
                 assert osp.exists(self.data_dict["anno_path"]), "Eval on coco dataset must provide valid path of the annotation file in config file: data/coco.yaml"
@@ -503,7 +505,7 @@ class TrainValDataset(Dataset):
                     labels = np.array(labels, dtype=np.float32)
                 if len(labels):
                     assert all(
-                        len(l) == 5 for l in labels
+                        len(l) == 5+12 for l in labels
                     ), f"{lb_path}: wrong label format."
                     assert (
                         labels >= 0
