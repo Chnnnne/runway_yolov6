@@ -27,7 +27,7 @@ parser.add_argument('--json_path', default='/workspace/YOLOv6/data/runway_filter
 parser.add_argument('--save_path', default='/workspace/YOLOv6/data/runway_filter/labels/val', type=str, help="specify where to save the output dir of labels")
 arg = parser.parse_args()
 
-# 将box的xywh转化为归一化的xywh
+# 将box的x_lt y_lt w h（原图尺度）  --->  x_c y_c w h（归一化）
 def box_convert(size, box):
     dw = 1. / (size[0])
     dh = 1. / (size[1])
@@ -49,6 +49,7 @@ def point_convert(size, point_list):
     
     return new_point_list
 
+#根据4个点的坐标，得到最小包围框的x_lt y_lt w h （原图尺度）
 def get_xywh_from_points(points):
     max_x, max_y, min_x, min_y = -1, -1, 2e5, 2e5
     for point in points:
@@ -101,11 +102,11 @@ if __name__ == '__main__':
             points_4 = ann["bbox"]
             center_line_points = ann["center_line"]
             xywh = get_xywh_from_points(points_4)
-            box = box_convert((img_width, img_height), xywh)# x_lt y_lt w h  --->  x_c y_c w h
+            box = box_convert((img_width, img_height), xywh)# x_lt y_lt w h（原图尺度）  --->  x_c y_c w h（归一化）
             points_4 = point_convert((img_width, img_height), points_4)
             center_line_points = point_convert((img_width, img_height), center_line_points)
 
-
+            # 因此最终的label文件的box的四个值是x_c y_c w h（归一化），6个点是归一化之后的
             f_txt.write("%s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s\n" % \
                         (id_map[ann["category_id"]], box[0], box[1], box[2], box[3],\
                          points_4[0][0],points_4[0][1],points_4[1][0],points_4[1][1],points_4[2][0],points_4[2][1],points_4[3][0],points_4[3][1],\

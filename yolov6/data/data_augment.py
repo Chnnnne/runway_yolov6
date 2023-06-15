@@ -70,35 +70,55 @@ def mixup(im, labels, im2, labels2):
 
 def box_candidates(box1, box2, wh_thr=2, ar_thr=20, area_thr=0.1, eps=1e-16):  # box1(4,n), box2(4,n)
     '''Compute candidate boxes: box1 before augment, box2 after augment, wh_thr (pixels), aspect_ratio_thr, area_ratio.'''
-    w1, h1 = box1[2] - box1[0], box1[3] - box1[1]
-    w2, h2 = box2[2] - box2[0], box2[3] - box2[1]
+    w1, h1 = box1[2] - box1[0], box1[3] - box1[1] # 4,   4      原label信息得到的目标对象的宽和高
+    w2, h2 = box2[2] - box2[0], box2[3] - box2[1] #             新label得到的目标对象的宽和高
     ar = np.maximum(w2 / (h2 + eps), h2 / (w2 + eps))  # aspect ratio
     return (w2 > wh_thr) & (h2 > wh_thr) & (w2 * h2 / (w1 * h1 + eps) > area_thr) & (ar < ar_thr)  # candidates
 
 
 def random_affine(img, labels=(), degrees=10, translate=.1, scale=.1, shear=10,
-                  new_shape=(640, 640)):
-    '''Applies Random affine transformation.'''
+                  new_shape=(640, 640)): 
+    '''
+    Applies Random affine transformation.
+    para: 
+    - img (1280,1280,3) [0-255]
+    - labels (4, 17)    [大图尺度]
+
+    - degress(旋转): 旋转角度的范围。如果degrees是数字而不是(min, max)形式的序列，则旋转角度的范围将为(-degrees，+degrees)。设置为0以停用旋转。
+    - translate(平移): 水平和垂直部分的偏移。例如translate = (a，b)，则水平偏移在范围 -img_width * a <dx <img_width * a 内随机抽样，垂直偏移在范围 -img_height * b <dy <img_height * b内随机抽样。
+    - scale(缩放)： 缩放因子区间，例如（a，b），则将从范围a <= scale <= b中随机采样缩放。
+    - shear（剪切变化）
+    '''
     n = len(labels)
     height, width = new_shape
 
     M, s = get_transform_matrix(img.shape[:2], (height, width), degrees, scale, shear, translate)
     if (M != np.eye(3)).any():  # image changed
-        img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+        # cv2.imwrite("/workspace/YOLOv6/debug/before.jpg", img)
+        img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114)) #img (1280,1280,3) -> (640, 640, 3)
+        # cv2.imwrite("/workspace/YOLOv6/debug/after.jpg", img)
 
     # Transform label coordinates
     if n:
-        new = np.zeros((n, 4))
+        new = np.zeros((n, 4)) # (4,4)
 
-        xy = np.ones((n * 4, 3))
-        xy[:, :2] = labels[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
-        xy = xy @ M.T  # transform
-        xy = xy[:, :2].reshape(n, 8)  # perspective rescale or affine
+        xy = np.ones((n * 4, 3)) # （16,3）
+        xy[:, :2] = labels[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1 右侧是(16, 2) 每4行是来自一个label的信息
+        xy = xy @ M.T  # transform   对label信息进行仿射变换
+        xy = xy[:, :2].reshape(n, 8)  # perspective rescale or affine   （4, 8）
 
+        # new here ↓
+        xy_6 = np.ones((n * 6, 3)) #每个label有6个点  (24, 3)
+        xy_6[:, :2] = labels[:, [5,6,7,8,9,10,11,12,13,14,15,16]].reshape(n * 6, 2) # (24,2)
+        xy_6 = xy_6 @ M.T # (24, 3)
+        xy_6 = xy_6[:, :2].reshape(n, 12) # (4, 12)
+        xy_6[:, [i for i in range(12) if i % 2 == 0]] = xy_6[:, [i for i in range(12) if i % 2 == 0]].clip(0, width)
+        xy_6[:, [i for i in range(12) if i % 2 == 1]] = xy_6[:, [i for i in range(12) if i % 2 == 1]].clip(0, height)
+        # new here ↑
         # create new boxes
-        x = xy[:, [0, 2, 4, 6]]
-        y = xy[:, [1, 3, 5, 7]]
-        new = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
+        x = xy[:, [0, 2, 4, 6]] # (4, 4)
+        y = xy[:, [1, 3, 5, 7]] # (4, 4)
+        new = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T # (4, 4) new当前存储的是每个label经过放射变化后的xyxy信息(最大和最小的值)
 
         # clip
         new[:, [0, 2]] = new[:, [0, 2]].clip(0, width)
@@ -108,6 +128,9 @@ def random_affine(img, labels=(), degrees=10, translate=.1, scale=.1, shear=10,
         i = box_candidates(box1=labels[:, 1:5].T * s, box2=new.T, area_thr=0.1)
         labels = labels[i]
         labels[:, 1:5] = new[i]
+        # new here ↓
+        labels[:, 5:17] = xy_6[i]
+        # new here ↑
 
     return img, labels
 
@@ -143,7 +166,7 @@ def get_transform_matrix(img_shape, new_shape, degrees, scale, shear, translate)
 
 
 def mosaic_augmentation(img_size, imgs, hs, ws, labels, hyp):
-    '''Applies Mosaic augmentation.'''
+    '''Applies Mosaic augmentation.  img都是(640, 480)'''
     assert len(imgs) == 4, "Mosaic augmentation of current version only supports 4 images."
 
     labels4 = []
@@ -151,10 +174,10 @@ def mosaic_augmentation(img_size, imgs, hs, ws, labels, hyp):
     yc, xc = (int(random.uniform(s//2, 3*s//2)) for _ in range(2))  # mosaic center x, y
     for i in range(len(imgs)):
         # Load image
-        img, h, w = imgs[i], hs[i], ws[i]
+        img, h, w = imgs[i], hs[i], ws[i] # img(480, 640, 3)[0-255]
         # place img in img4
         if i == 0:  # top left
-            img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+            img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles   (1280,1280, 3)=114
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
             x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
         elif i == 1:  # top right
@@ -174,26 +197,47 @@ def mosaic_augmentation(img_size, imgs, hs, ws, labels, hyp):
         # Labels
         labels_per_img = labels[i].copy()
         if labels_per_img.size:
-            boxes = np.copy(labels_per_img[:, 1:])
-            boxes[:, 0] = w * (labels_per_img[:, 1] - labels_per_img[:, 3] / 2) + padw  # top left x
-            boxes[:, 1] = h * (labels_per_img[:, 2] - labels_per_img[:, 4] / 2) + padh  # top left y
+            boxes = np.copy(labels_per_img[:, 1:5])
+            boxes[:, 0] = w * (labels_per_img[:, 1] - labels_per_img[:, 3] / 2) + padw  # top left x    得到的是在大图尺度上的object的左上角的x
+            boxes[:, 1] = h * (labels_per_img[:, 2] - labels_per_img[:, 4] / 2) + padh  # top left y    得到的是在大图尺度上的object的左上角的y
             boxes[:, 2] = w * (labels_per_img[:, 1] + labels_per_img[:, 3] / 2) + padw  # bottom right x
             boxes[:, 3] = h * (labels_per_img[:, 2] + labels_per_img[:, 4] / 2) + padh  # bottom right y
-            labels_per_img[:, 1:] = boxes
+            labels_per_img[:, 1:5] = boxes # 这一步将原label文件中的object信息从x_c y_c w h(归一化)  -->  x y x y大图尺度
+            
+            for i in range(5, 17):
+                if i % 2 == 1:
+                    labels_per_img[:,i] = w * labels_per_img[:, i] + padw
+                else:
+                    labels_per_img[:,i] = h * labels_per_img[:, i] + padh
 
         labels4.append(labels_per_img)
 
     # Concat/clip labels
-    labels4 = np.concatenate(labels4, 0)
+    labels4 = np.concatenate(labels4, 0) # list -> ndarray:(4, 17)
     for x in (labels4[:, 1:]):
         np.clip(x, 0, 2 * s, out=x)
 
+
+    # 以上仅完成了4张图片的随机拼接操作，得到的是一个(1280,1280,3)的图片以及在这个大图尺度上的label信息，还没有进行放射变化，下面才是放射变化
     # Augment
+    # img4:  (1280,1280,3) -> (640, 640, 3)         labels4:(4, 17)   -> (3, 17)????少了一个？？？
     img4, labels4 = random_affine(img4, labels4,
                                   degrees=hyp['degrees'],
                                   translate=hyp['translate'],
                                   scale=hyp['scale'],
                                   shear=hyp['shear'],
                                   new_shape=(img_size, img_size))
+    cv2.circle(img4, center= (0,0), radius=100,color=0)
+    # for i in range(len(labels4)):
+    #     cv2.circle(img4, center=(int(labels4[i][1]),int(labels4[i][2])), radius=5, color=0)
+    #     cv2.circle(img4, center=(int(labels4[i][3]),int(labels4[i][4])), radius=5, color=0)
+    # for i in range(len(labels4)):
+    #     cv2.circle(img4, center=(int(labels4[i][5]),int(labels4[i][6])), radius=1, color=0)
+    #     cv2.circle(img4, center=(int(labels4[i][7]),int(labels4[i][8])), radius=1, color=0)
+    #     cv2.circle(img4, center=(int(labels4[i][9]),int(labels4[i][10])), radius=1, color=0)
+    #     cv2.circle(img4, center=(int(labels4[i][11]),int(labels4[i][12])), radius=1, color=0)
+    #     cv2.circle(img4, center=(int(labels4[i][13]),int(labels4[i][14])), radius=1, color=(213,0,213))
+    #     cv2.circle(img4, center=(int(labels4[i][15]),int(labels4[i][16])), radius=1, color=(213,0,213))
 
+    # cv2.imwrite("/workspace/YOLOv6/debug/a.jpg", img4)
     return img4, labels4

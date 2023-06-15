@@ -65,7 +65,7 @@ class TrainValDataset(Dataset):
         self.main_process = self.rank in (-1, 0)
         self.task = self.task.capitalize()
         self.class_names = data_dict["names"]
-        self.img_paths, self.labels = self.get_imgs_labels(self.img_dir) # img_path:tuple  len:9686;            labels:tuple   len:9686 注意是每张图片都对应的label上可能有多个对象
+        self.img_paths, self.labels = self.get_imgs_labels(self.img_dir) # img_path:tuple （len9686）;            labels:tuple （len9686） 注意是每张图片都对应的label上可能有多个对象
         if self.rect:
             shapes = [self.img_info[p]["shape"] for p in self.img_paths]
             self.shapes = np.array(shapes, dtype=np.float64)
@@ -90,7 +90,7 @@ class TrainValDataset(Dataset):
         """
         # Mosaic Augmentation
         if self.augment and random.random() < self.hyp["mosaic"]:
-            img, labels = self.get_mosaic(index)
+            img, labels = self.get_mosaic(index) # labels (x_c,y_c,w,h) -> (xyxy);      img(640,640,3)[0,255]     labels(3, 17) [0,640] cxyxy 6*xy
             shapes = None
 
             # MixUp augmentation
@@ -162,12 +162,16 @@ class TrainValDataset(Dataset):
             boxes[:, 1] = ((labels[:, 2] + labels[:, 4]) / 2) / h  # y center
             boxes[:, 2] = (labels[:, 3] - labels[:, 1]) / w  # width
             boxes[:, 3] = (labels[:, 4] - labels[:, 2]) / h  # height
-            labels[:, 1:] = boxes
+            labels[:, 1:5] = boxes[:,:4] # 将labels xyxy[0,640]  --->   x_c y_c w h （归一化）
+            # 此处将labels[:, 5:17]的12个值，分别除以wh得到归一化后的xy
+            labels[:, [i for i in range(5, 17) if i % 2 == 1]] = labels[:, [i for i in range(5, 17) if i % 2 == 1]] / w
+            labels[:, [i for i in range(5, 17) if i % 2 == 0]] = labels[:, [i for i in range(5, 17) if i % 2 == 0]] / h
 
         if self.augment:
-            img, labels = self.general_augment(img, labels)
+            img, labels = self.general_augment(img, labels) #  hsv, random ud-flip and random lr-flips
+            # cv2.imwrite("/workspace/YOLOv6/debug/b.jpg", img)
 
-        labels_out = torch.zeros((len(labels), 6))
+        labels_out = torch.zeros((len(labels), 6 + 12)) # (3, 18)
         if len(labels):
             labels_out[:, 1:] = torch.from_numpy(labels)
 
@@ -182,7 +186,7 @@ class TrainValDataset(Dataset):
         This function loads image by cv2, resize original image to target shape(img_size) with keeping ratio.
 
         Returns:
-            Image, original shape of image, resized image shape
+            Image（是ndarray格式的,HWC）, original shape of image, resized image shape
         """
         path = self.img_paths[index]
         try:
@@ -196,7 +200,7 @@ class TrainValDataset(Dataset):
         if force_load_size:
             r = force_load_size / max(h0, w0)
         else:
-            r = self.img_size / max(h0, w0)
+            r = self.img_size / max(h0, w0) # 这里得到了一个radio，作用是将图片的大小放缩到640之间
         if r != 1:
             im = cv2.resize(
                 im,
@@ -389,14 +393,14 @@ class TrainValDataset(Dataset):
         random.shuffle(indices)
         imgs, hs, ws, labels = [], [], [], []
         for index in indices:
-            img, _, (h, w) = self.load_image(index)
-            labels_per_img = self.labels[index]
+            img, _, (h, w) = self.load_image(index) # load的img是ndarray格式的,HWC ，[0, 255]，  (480,640,3)
+            labels_per_img = self.labels[index] # labels是原始label
             imgs.append(img)
             hs.append(h)
             ws.append(w)
             labels.append(labels_per_img)
-        img, labels = mosaic_augmentation(self.img_size, imgs, hs, ws, labels, self.hyp)
-        return img, labels
+        img, labels = mosaic_augmentation(self.img_size, imgs, hs, ws, labels, self.hyp) # labels (x_c,y_c,w,h) -> (xyxy)原图尺度
+        return img, labels # (640,640,3)    (3, 17)
 
     def general_augment(self, img, labels):
         """Gets images and labels after general augment
@@ -412,17 +416,19 @@ class TrainValDataset(Dataset):
             vgain=self.hyp["hsv_v"],
         )
 
-        # Flip up-down
+        # Flip up-down 上下翻转只影响y坐标
         if random.random() < self.hyp["flipud"]:
             img = np.flipud(img)
             if nl:
                 labels[:, 2] = 1 - labels[:, 2]
+                labels[:, [i for i in range(5, 17) if i % 2 ==0]] = 1 - labels[:, [i for i in range(5, 17) if i % 2 ==0]]
 
         # Flip left-right
         if random.random() < self.hyp["fliplr"]:
             img = np.fliplr(img)
             if nl:
                 labels[:, 1] = 1 - labels[:, 1]
+                labels[:, [i for i in range(5, 17) if i % 2 ==1]] = 1 - labels[:, [i for i in range(5, 17) if i % 2 ==1]]
 
         return img, labels
 
